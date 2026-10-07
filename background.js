@@ -21,13 +21,16 @@ async function getConfig() {
 
 async function getCurrentTab() {
   const tabs = await chrome.tabs.query({
-    active: true,
-    lastFocusedWindow: true
+    active: true
   });
-  return tabs[0] || null;
+
+  if (tabs[0]) return tabs[0];
+
+  const allTabs = await chrome.tabs.query({});
+  return allTabs[0] || null;
 }
 
-async function heartbeat() {
+async function heartbeat(comandoId = "") {
   const cfg = await getConfig();
   if (!cfg.maquinaId || !cfg.token) return;
 
@@ -41,7 +44,8 @@ async function heartbeat() {
       body: JSON.stringify({
         maquina_id: cfg.maquinaId,
         token: cfg.token,
-        url_atual: urlAtual
+        url_atual: urlAtual,
+        ...(comandoId ? { comando_id: comandoId } : {})
       }),
       cache: "no-store"
     });
@@ -49,9 +53,17 @@ async function heartbeat() {
     if (!response.ok) {
       console.warn("[InfraHub] heartbeat:", response.status);
     }
+
+    return response.ok;
   } catch (error) {
     console.warn("[InfraHub] falha no heartbeat:", error);
+    return false;
   }
+}
+
+async function acknowledgeCommand(comandoId) {
+  if (!comandoId) return false;
+  return heartbeat(String(comandoId));
 }
 
 async function pollCommands() {
@@ -82,7 +94,14 @@ async function pollCommands() {
 
     for (const comando of comandos) {
       try {
-        await executeCommand(comando);
+        const executado = await executeCommand(comando);
+
+        if (executado) {
+          const confirmado = await acknowledgeCommand(comando?.id);
+          if (!confirmado) {
+            console.warn("[InfraHub] comando executado, mas não confirmado:", comando?.id);
+          }
+        }
       } catch (error) {
         console.error("[InfraHub] falha ao executar comando:", comando, error);
       }
@@ -116,11 +135,11 @@ async function executeCommand(comando) {
     if (tab?.id != null) {
       console.log("[InfraHub] recarregando aba:", tab.id, tab.url || "");
       await chrome.tabs.reload(tab.id);
-      return;
+      return true;
     }
 
-    console.warn("[InfraHub] nenhuma aba ativa encontrada para reload.");
-    return;
+    console.warn("[InfraHub] nenhuma aba encontrada para reload.");
+    return false;
   }
 
   if (tipo === "navigate" || tipo === "navegar") {
@@ -128,21 +147,22 @@ async function executeCommand(comando) {
 
     if (!url) {
       console.warn("[InfraHub] comando navigate sem URL.");
-      return;
+      return false;
     }
 
     const tab = await getCurrentTab();
 
     if (tab?.id != null) {
       await chrome.tabs.update(tab.id, { url: String(url) });
-      return;
+      return true;
     }
 
-    console.warn("[InfraHub] nenhuma aba ativa encontrada para navigate.");
-    return;
+    console.warn("[InfraHub] nenhuma aba encontrada para navigate.");
+    return false;
   }
 
   console.warn("[InfraHub] comando desconhecido:", comando);
+  return false;
 }
 
 async function ensureAlarms() {
@@ -188,7 +208,6 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
   }
 });
 
-// Garante os alarms mesmo quando o service worker é acordado por outro motivo.
 (async () => {
   await ensureAlarms();
 })();
