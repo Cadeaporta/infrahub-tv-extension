@@ -30,17 +30,15 @@ function Get-ChromePath {
 try {
   if (-not (Test-Path $ExtensionPath)) { throw "Pasta da extensao nao encontrada: $ExtensionPath" }
   $installedVersion = Get-VersionFromManifest -Path $ExtensionPath
-  $latest = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repository/releases/latest" -Headers $apiHeaders -Method Get
-  if (-not $latest.tag_name -or $latest.draft -or $latest.prerelease) { throw "Nao foi possivel identificar uma release estavel." }
-  $latestVersionText = $latest.tag_name -replace "^v", ""
-  $latestVersion = [version]$latestVersionText
+  $remoteManifest = Invoke-RestMethod -Uri "https://raw.githubusercontent.com/$Repository/main/manifest.json" -Headers $apiHeaders -Method Get
+  $latestVersion = [version]$remoteManifest.version
   Write-Host "InfraHub TV - instalada: $installedVersion | disponivel: $latestVersion"
   if ($latestVersion -le $installedVersion) { Write-Host "Nenhuma atualizacao necessaria."; exit 0 }
-  $asset = $latest.assets | Where-Object { $_.name -eq "InfraHub-TV-Extension-$latestVersionText.zip" } | Select-Object -First 1
-  if (-not $asset) { throw "Asset da release $latestVersionText nao encontrado." }
+
   $tempRoot = Join-Path $env:TEMP ("InfraHubTVUpdate-" + [guid]::NewGuid().ToString("N"))
-  $zipPath = Join-Path $tempRoot $asset.name
-  $extractPath = Join-Path $tempRoot "package"
+  $zipPath = Join-Path $tempRoot "source.zip"
+  $extractPath = Join-Path $tempRoot "source"
+  $sourceUrl = "https://github.com/$Repository/archive/refs/heads/main.zip"
   $backupPath = "$ExtensionPath.backup"
   New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
   try {
