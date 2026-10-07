@@ -177,7 +177,19 @@ async function executeCommand(comando) {
       return false;
     }
 
-    for (const url of validUrls) {
+    const primeiraUrl = validUrls[0];
+    const tabAtual = await getCurrentTab();
+
+    if (tabAtual?.id != null) {
+      await chrome.tabs.update(tabAtual.id, {
+        url: primeiraUrl,
+        active: true
+      });
+    } else {
+      await chrome.tabs.create({ url: primeiraUrl, active: true });
+    }
+
+    for (const url of validUrls.slice(1)) {
       await chrome.tabs.create({ url, active: false });
     }
 
