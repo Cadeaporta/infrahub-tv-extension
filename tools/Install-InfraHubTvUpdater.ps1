@@ -16,9 +16,7 @@ New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 Copy-Item $sourceUpdater $updaterPath -Force
 $actionArgs = '-NoProfile -ExecutionPolicy Bypass -File "' + $updaterPath + '" -ExtensionPath "' + $ExtensionPath + '"'
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $actionArgs
-$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date)
-$trigger.Repetition.Interval = "PT$IntervalMinutes" + "M"
-$trigger.Repetition.Duration = "P1D"
+$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes) -RepetitionDuration (New-TimeSpan -Days 3650)
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
