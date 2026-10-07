@@ -150,15 +150,49 @@ async function executeCommand(comando) {
       return false;
     }
 
+    const destino = String(url).trim();
+
+    if (!/^https?:\/\//i.test(destino)) {
+      console.warn("[InfraHub] URL inválida para navigate:", destino);
+      return false;
+    }
+
     const tab = await getCurrentTab();
 
     if (tab?.id != null) {
-      await chrome.tabs.update(tab.id, { url: String(url) });
-      return true;
+      try {
+        console.log("[InfraHub] navegando aba:", {
+          tabId: tab.id,
+          de: tab.url || "",
+          para: destino
+        });
+
+        await chrome.tabs.update(tab.id, {
+          url: destino,
+          active: true
+        });
+
+        return true;
+      } catch (error) {
+        console.warn(
+          "[InfraHub] tabs.update rejeitado; tentando nova aba:",
+          error
+        );
+      }
     }
 
-    console.warn("[InfraHub] nenhuma aba encontrada para navigate.");
-    return false;
+    try {
+      const novaAba = await chrome.tabs.create({
+        url: destino,
+        active: true
+      });
+
+      console.log("[InfraHub] navegação realizada em nova aba:", novaAba.id);
+      return true;
+    } catch (error) {
+      console.error("[InfraHub] falha ao navegar para:", destino, error);
+      return false;
+    }
   }
 
   if (tipo === "abrir_urls" || tipo === "abrir_url") {
@@ -181,12 +215,42 @@ async function executeCommand(comando) {
     const tabAtual = await getCurrentTab();
 
     if (tabAtual?.id != null) {
-      await chrome.tabs.update(tabAtual.id, {
-        url: primeiraUrl,
-        active: true
-      });
+      try {
+        await chrome.tabs.update(tabAtual.id, {
+          url: primeiraUrl,
+          active: true
+        });
+      } catch (error) {
+        console.warn(
+          "[InfraHub] tabs.update rejeitado em abrir_urls; usando nova aba:",
+          error
+        );
+
+        try {
+          await chrome.tabs.create({
+            url: primeiraUrl,
+            active: true
+          });
+        } catch (createError) {
+          console.error(
+            "[InfraHub] falha ao abrir primeira URL:",
+            primeiraUrl,
+            createError
+          );
+          return false;
+        }
+      }
     } else {
-      await chrome.tabs.create({ url: primeiraUrl, active: true });
+      try {
+        await chrome.tabs.create({ url: primeiraUrl, active: true });
+      } catch (error) {
+        console.error(
+          "[InfraHub] falha ao abrir primeira URL:",
+          primeiraUrl,
+          error
+        );
+        return false;
+      }
     }
 
     for (const url of validUrls.slice(1)) {
