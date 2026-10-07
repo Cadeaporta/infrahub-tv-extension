@@ -161,6 +161,30 @@ async function executeCommand(comando) {
     return false;
   }
 
+  if (tipo === "abrir_urls" || tipo === "abrir_url") {
+    const urls = Array.isArray(payload?.urls)
+      ? payload.urls
+      : payload?.url
+        ? [payload.url]
+        : [];
+
+    const validUrls = urls
+      .map(url => String(url || "").trim())
+      .filter(url => /^https?:\\/\\//i.test(url));
+
+    if (!validUrls.length) {
+      console.warn("[InfraHub] comando abrir_urls sem URLs HTTP/HTTPS válidas.");
+      return false;
+    }
+
+    for (const url of validUrls) {
+      await chrome.tabs.create({ url, active: false });
+    }
+
+    console.log("[InfraHub] URLs abertas:", validUrls);
+    return true;
+  }
+
   console.warn("[InfraHub] comando desconhecido:", comando);
   return false;
 }
