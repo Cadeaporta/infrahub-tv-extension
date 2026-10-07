@@ -2,6 +2,9 @@ const DEFAULT_API_URL =
   "https://infrahub-monitor-api.vercel.app";
 
 async function load() {
+  const manifest = chrome.runtime.getManifest();
+  const version = document.querySelector("#version");
+  if (version) version.textContent = `Versão instalada: ${manifest.version}`;
   const cfg = await chrome.storage.local.get({
     apiUrl: DEFAULT_API_URL,
     maquinaId: "",
