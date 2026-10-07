@@ -42,17 +42,19 @@ try {
   $backupPath = "$ExtensionPath.backup"
   New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
   try {
-    Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath -Headers $apiHeaders
+    Invoke-WebRequest -Uri $sourceUrl -OutFile $zipPath -Headers $apiHeaders
     Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
-    $packageVersion = Get-VersionFromManifest -Path $extractPath
-    if ($packageVersion -ne $latestVersion) { throw "A release baixada declara $packageVersion, mas a release informa $latestVersion." }
+    $sourceRoot = Get-ChildItem -Path $extractPath -Directory | Select-Object -First 1
+    if (-not $sourceRoot) { throw "Nao foi possivel localizar o conteudo do repositorio baixado." }
+    $packageVersion = Get-VersionFromManifest -Path $sourceRoot.FullName
+    if ($packageVersion -ne $latestVersion) { throw "O codigo baixado declara $packageVersion, mas a branch informa $latestVersion." }
     $chromeWasRunning = Get-Process chrome -ErrorAction SilentlyContinue
     $chromePath = Get-ChromePath
     if ($chromeWasRunning) { Write-Host "Fechando Chrome para substituir a extensao..."; $chromeWasRunning | Stop-Process -Force; Start-Sleep -Seconds 2 }
     if (Test-Path $backupPath) { Remove-Item $backupPath -Recurse -Force }
     Move-Item -Path $ExtensionPath -Destination $backupPath
     New-Item -ItemType Directory -Path $ExtensionPath -Force | Out-Null
-    Get-ChildItem -Path $extractPath -Force | ForEach-Object { Copy-Item -Path $_.FullName -Destination $ExtensionPath -Recurse -Force }
+    Get-ChildItem -Path $sourceRoot.FullName -Force | ForEach-Object { Copy-Item -Path $_.FullName -Destination $ExtensionPath -Recurse -Force }
     $installedAfter = Get-VersionFromManifest -Path $ExtensionPath
     if ($installedAfter -ne $latestVersion) { throw "Falha na validacao da instalacao. Versao encontrada: $installedAfter" }
     Remove-Item $backupPath -Recurse -Force
