@@ -170,7 +170,7 @@ async function executeCommand(comando) {
 
     const validUrls = urls
       .map(url => String(url || "").trim())
-      .filter(url => /^https?:\\/\\//i.test(url));
+      .filter(url => /^https?:\/\//i.test(url));
 
     if (!validUrls.length) {
       console.warn("[InfraHub] comando abrir_urls sem URLs HTTP/HTTPS válidas.");
