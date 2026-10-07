@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "InfraHub TV Monitor",
-  "version": "1.0.1",
-  "description": "Heartbeat e recebimento de comandos para as TVs do InfraHub.",
+  "version": "1.0.2",
+  "description": "Heartbeat, comandos remotos e abertura de URLs para as TVs do InfraHub.",
   "permissions": [
     "storage",
     "alarms",
