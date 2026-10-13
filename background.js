@@ -265,8 +265,7 @@ async function syncRemoteConfig() {
   try {
     const url = new URL(`${cfg.apiUrl}/api/tv/config`);
     url.searchParams.set("maquina_id", cfg.maquinaId);
-    url.searchParams.set("token", cfg.token);
-    const response = await fetch(url.toString(), { method: "GET", cache: "no-store" });
+    const response = await fetch(url.toString(), { method: "GET", headers: { "x-tv-token": cfg.token }, cache: "no-store" });
     if (!response.ok) return false;
     const data = await response.json();
     const configuracao = data.configuracao && typeof data.configuracao === "object" ? data.configuracao : {};
