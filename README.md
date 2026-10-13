@@ -25,3 +25,9 @@ A `SUPABASE_SERVICE_ROLE_KEY` nunca é usada pela extensão.
 
 `chrome://extensions` → habilite **Modo do desenvolvedor** →
 **Carregar sem compactação** → selecione esta pasta.
+
+## Diagnóstico local
+
+A extensão mantém até 300 eventos recentes em `chrome.storage.local`, incluindo falhas de comunicação, comandos recebidos/executados e confirmações. Os logs permanecem na TV quando a API fica indisponível e não são enviados automaticamente. Abra as opções da extensão para consultar os eventos recentes ou exportar o arquivo JSON para diagnóstico.
+
+A versão 1.0.7 ajusta o heartbeat para 60 segundos e adiciona o registro local de eventos. A navegação das abas continua sob controle do navegador mesmo quando a API não responde.
