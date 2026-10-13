@@ -144,6 +144,7 @@ async function syncDiagnosticLogs() {
         maquina_id: cfg.maquinaId,
         token: cfg.token,
         eventos: batch.map((item) => ({
+          event_id: item.eventId,
           tipo: "extension_log",
           nivel: item.nivel === "error" ? "erro" : item.nivel === "warn" ? "aviso" : item.nivel === "debug" ? "debug" : "info",
           mensagem: item.mensagem,
