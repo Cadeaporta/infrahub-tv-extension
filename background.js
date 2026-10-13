@@ -271,11 +271,14 @@ async function syncRemoteConfig() {
     const data = await response.json();
     const configuracao = data.configuracao && typeof data.configuracao === "object" ? data.configuracao : {};
     const perfil = data.perfil && typeof data.perfil === "object" ? data.perfil : null;
+    const previousState = await chrome.storage.local.get({ remoteConfig: {} });
+    const previousProfileId = previousState.remoteConfig?.perfil?.id || null;
     await chrome.storage.local.set({ remoteConfig: { configuracao, perfil, syncedAt: new Date().toISOString() } });
 
     if (perfil && perfil.ativo !== false && Array.isArray(perfil.sites) && perfil.sites.length) {
       await startTabTurner(perfil.sites, perfil.intervalo_segundos);
-    } else if (configuracao.tab_turner_enabled === false) {
+    } else if (configuracao.tab_turner_enabled === false ||
+      (previousProfileId && !perfil && !Array.isArray(configuracao.sites))) {
       await stopTabTurner();
     } else if (configuracao.tab_turner_enabled === true && Array.isArray(configuracao.sites)) {
       await startTabTurner(configuracao.sites, configuracao.intervalo_segundos);
