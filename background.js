@@ -3,7 +3,32 @@ const DEFAULT_API_URL =
 
 const HEARTBEAT_ALARM = "infrahub-heartbeat";
 const COMMANDS_ALARM = "infrahub-commands";
-const POLL_MINUTES = 0.5;
+const HEARTBEAT_MINUTES = 1;
+const COMMANDS_POLL_MINUTES = 0.5;
+const MAX_LOCAL_LOGS = 300;
+
+let logQueue = Promise.resolve();
+
+function registrarEvento(nivel, mensagem, detalhes = {}) {
+  const evento = {
+    timestamp: new Date().toISOString(),
+    nivel,
+    mensagem: String(mensagem || '').slice(0, 500),
+    detalhes
+  };
+
+  logQueue = logQueue.then(async () => {
+    const { diagnosticLogs = [] } = await chrome.storage.local.get({ diagnosticLogs: [] });
+    const logs = Array.isArray(diagnosticLogs) ? diagnosticLogs : [];
+    await chrome.storage.local.set({
+      diagnosticLogs: [...logs, evento].slice(-MAX_LOCAL_LOGS)
+    });
+  }).catch((error) => {
+    console.error('[InfraHub] não foi possível salvar log local:', error);
+  });
+
+  return logQueue;
+}
 
 async function getConfig() {
   const cfg = await chrome.storage.local.get({
@@ -52,11 +77,15 @@ async function heartbeat(comandoId = "") {
 
     if (!response.ok) {
       console.warn("[InfraHub] heartbeat:", response.status);
+      await registrarEvento("error", "Heartbeat recusado pela API", { status: response.status });
+    } else {
+      await registrarEvento("info", "Heartbeat confirmado", { urlAtual });
     }
 
     return response.ok;
   } catch (error) {
     console.warn("[InfraHub] falha no heartbeat:", error);
+    await registrarEvento("error", "Falha de comunicação no heartbeat", { erro: String(error?.message || error) });
     return false;
   }
 }
@@ -82,6 +111,7 @@ async function pollCommands() {
 
     if (!response.ok) {
       console.warn("[InfraHub] comandos:", response.status);
+      await registrarEvento("error", "Consulta de comandos recusada pela API", { status: response.status });
       return;
     }
 
@@ -90,6 +120,7 @@ async function pollCommands() {
 
     if (comandos.length) {
       console.log(`[InfraHub] ${comandos.length} comando(s) recebido(s).`);
+      await registrarEvento("info", "Comandos recebidos", { quantidade: comandos.length, ids: comandos.map(c => c?.id).filter(Boolean) });
     }
 
     for (const comando of comandos) {
@@ -97,17 +128,25 @@ async function pollCommands() {
         const executado = await executeCommand(comando);
 
         if (executado) {
+          await registrarEvento("info", "Comando executado localmente", { comandoId: comando?.id, tipo: comando?.tipo });
           const confirmado = await acknowledgeCommand(comando?.id);
           if (!confirmado) {
             console.warn("[InfraHub] comando executado, mas não confirmado:", comando?.id);
+            await registrarEvento("error", "Comando executado, mas não confirmado pela API", { comandoId: comando?.id, tipo: comando?.tipo });
+          } else {
+            await registrarEvento("info", "Comando confirmado pela API", { comandoId: comando?.id, tipo: comando?.tipo });
           }
+        } else {
+          await registrarEvento("error", "Comando não executado", { comandoId: comando?.id, tipo: comando?.tipo });
         }
       } catch (error) {
         console.error("[InfraHub] falha ao executar comando:", comando, error);
+        await registrarEvento("error", "Exceção durante execução do comando", { comandoId: comando?.id, tipo: comando?.tipo, erro: String(error?.message || error) });
       }
     }
   } catch (error) {
     console.warn("[InfraHub] falha ao buscar comandos:", error);
+    await registrarEvento("error", "Falha ao consultar comandos", { erro: String(error?.message || error) });
   }
 }
 
@@ -128,6 +167,7 @@ async function executeCommand(comando) {
     tipo,
     payload
   });
+  await registrarEvento("info", "Iniciando comando", { comandoId: comando?.id, tipo });
 
   if (tipo === "reload") {
     const tab = await getCurrentTab();
@@ -267,21 +307,23 @@ async function executeCommand(comando) {
 
 async function ensureAlarms() {
   await chrome.alarms.create(HEARTBEAT_ALARM, {
-    periodInMinutes: POLL_MINUTES
+    periodInMinutes: HEARTBEAT_MINUTES
   });
 
   await chrome.alarms.create(COMMANDS_ALARM, {
-    periodInMinutes: POLL_MINUTES
+    periodInMinutes: COMMANDS_POLL_MINUTES
   });
 }
 
 chrome.runtime.onInstalled.addListener(async () => {
+  await registrarEvento("info", "Extensão instalada ou atualizada", { versao: chrome.runtime.getManifest().version });
   await ensureAlarms();
   await heartbeat();
   await pollCommands();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
+  await registrarEvento("info", "Navegador iniciado", { versao: chrome.runtime.getManifest().version });
   await ensureAlarms();
   await heartbeat();
   await pollCommands();
