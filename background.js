@@ -176,6 +176,20 @@ async function startTabTurner(urlsInput, intervalInput = 60) {
 
   if (!urls.length) return false;
   const intervalSeconds = Math.min(3600, Math.max(30, Number(intervalInput) || 60));
+  const currentState = await chrome.storage.local.get({ tabTurner: {} });
+  const current = currentState.tabTurner || {};
+  const sameConfig = current.enabled &&
+    current.intervalSeconds === intervalSeconds &&
+    JSON.stringify(current.urls || []) === JSON.stringify(urls);
+  if (sameConfig) {
+    const existingAlarm = await chrome.alarms.get(TAB_TURNER_ALARM);
+    if (!existingAlarm) {
+      await chrome.alarms.create(TAB_TURNER_ALARM, {
+        periodInMinutes: Math.max(0.5, intervalSeconds / 60)
+      });
+    }
+    return true;
+  }
   const tabIds = [];
   for (const url of urls) {
     const matches = await chrome.tabs.query({ url });
