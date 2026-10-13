@@ -3,6 +3,7 @@ const DEFAULT_API_URL =
 
 const HEARTBEAT_ALARM = "infrahub-heartbeat";
 const COMMANDS_ALARM = "infrahub-commands";
+const TAB_TURNER_ALARM = "infrahub-tab-turner";
 const HEARTBEAT_MINUTES = 1;
 const COMMANDS_POLL_MINUTES = 0.5;
 const MAX_LOCAL_LOGS = 300;
@@ -163,6 +164,116 @@ async function syncDiagnosticLogs() {
   }
 }
 
+async function startTabTurner(urlsInput, intervalInput = 60) {
+  const urls = (Array.isArray(urlsInput) ? urlsInput : [])
+    .map((item) => typeof item === 'string' ? item : item?.url)
+    .map((item) => String(item || '').trim())
+    .filter((url) => {
+      try { return ['http:', 'https:'].includes(new URL(url).protocol); }
+      catch { return false; }
+    })
+    .slice(0, 20);
+
+  if (!urls.length) return false;
+  const intervalSeconds = Math.min(3600, Math.max(30, Number(intervalInput) || 60));
+  const tabIds = [];
+  for (const url of urls) {
+    const matches = await chrome.tabs.query({ url });
+    if (matches.length && matches[0].id != null) {
+      tabIds.push(matches[0].id);
+    } else {
+      const tab = await chrome.tabs.create({ url, active: tabIds.length === 0 });
+      if (tab?.id != null) tabIds.push(tab.id);
+    }
+  }
+
+  await chrome.storage.local.set({
+    tabTurner: {
+      enabled: true,
+      urls,
+      tabIds,
+      intervalSeconds,
+      index: 0,
+      updatedAt: new Date().toISOString()
+    }
+  });
+  await chrome.alarms.clear(TAB_TURNER_ALARM);
+  await chrome.alarms.create(TAB_TURNER_ALARM, {
+    periodInMinutes: Math.max(0.5, intervalSeconds / 60)
+  });
+  await registrarEvento("info", "Tab Turner iniciado", { quantidade: urls.length, intervaloSegundos: intervalSeconds });
+  return true;
+}
+
+async function stopTabTurner() {
+  await chrome.alarms.clear(TAB_TURNER_ALARM);
+  const { tabTurner = {} } = await chrome.storage.local.get({ tabTurner: {} });
+  await chrome.storage.local.set({ tabTurner: { ...tabTurner, enabled: false, updatedAt: new Date().toISOString() } });
+  await registrarEvento("info", "Tab Turner parado");
+  return true;
+}
+
+async function rotateTabTurner() {
+  const { tabTurner = {} } = await chrome.storage.local.get({ tabTurner: {} });
+  if (!tabTurner.enabled || !Array.isArray(tabTurner.urls) || !tabTurner.urls.length) return;
+
+  const tabs = await chrome.tabs.query({});
+  const tabIds = [];
+  for (const url of tabTurner.urls) {
+    const existing = tabs.find((tab) => tab.url === url && tab.id != null);
+    if (existing) tabIds.push(existing.id);
+    else {
+      try {
+        const created = await chrome.tabs.create({ url, active: false });
+        if (created?.id != null) tabIds.push(created.id);
+      } catch (error) {
+        await registrarEvento("error", "Tab Turner não conseguiu abrir uma URL", { url, erro: String(error?.message || error) });
+      }
+    }
+  }
+  if (!tabIds.length) return;
+
+  const index = Number.isInteger(tabTurner.index) ? tabTurner.index : 0;
+  const nextIndex = (index + 1) % tabIds.length;
+  try {
+    await chrome.tabs.update(tabIds[nextIndex], { active: true });
+    await chrome.storage.local.set({
+      tabTurner: { ...tabTurner, tabIds, index: nextIndex, lastRotationAt: new Date().toISOString() }
+    });
+  } catch (error) {
+    await registrarEvento("error", "Tab Turner falhou ao alternar aba", { erro: String(error?.message || error) });
+  }
+}
+
+async function syncRemoteConfig() {
+  const cfg = await getConfig();
+  if (!cfg.maquinaId || !cfg.token) return false;
+  try {
+    const url = new URL(`${cfg.apiUrl}/api/tv/config`);
+    url.searchParams.set("maquina_id", cfg.maquinaId);
+    url.searchParams.set("token", cfg.token);
+    const response = await fetch(url.toString(), { method: "GET", cache: "no-store" });
+    if (!response.ok) return false;
+    const data = await response.json();
+    const configuracao = data.configuracao && typeof data.configuracao === "object" ? data.configuracao : {};
+    const perfil = data.perfil && typeof data.perfil === "object" ? data.perfil : null;
+    await chrome.storage.local.set({ remoteConfig: { configuracao, perfil, syncedAt: new Date().toISOString() } });
+
+    if (perfil && perfil.ativo !== false && Array.isArray(perfil.sites) && perfil.sites.length) {
+      await startTabTurner(perfil.sites, perfil.intervalo_segundos);
+    } else if (configuracao.tab_turner_enabled === false) {
+      await stopTabTurner();
+    } else if (configuracao.tab_turner_enabled === true && Array.isArray(configuracao.sites)) {
+      await startTabTurner(configuracao.sites, configuracao.intervalo_segundos);
+    }
+    await registrarEvento("info", "Configuração remota sincronizada", { perfil: perfil?.nome || null });
+    return true;
+  } catch (error) {
+    await registrarEvento("error", "Falha ao sincronizar configuração remota", { erro: String(error?.message || error) });
+    return false;
+  }
+}
+
 async function pollCommands() {
   const cfg = await getConfig();
   if (!cfg.maquinaId || !cfg.token) return;
@@ -186,6 +297,7 @@ async function pollCommands() {
     const data = await response.json();
     const comandos = Array.isArray(data.comandos) ? data.comandos : [];
 
+    await syncRemoteConfig();
     if (comandos.length) {
       console.log(`[InfraHub] ${comandos.length} comando(s) recebido(s).`);
       await registrarEvento("info", "Comandos recebidos", { quantidade: comandos.length, ids: comandos.map(c => c?.id).filter(Boolean) });
@@ -241,6 +353,18 @@ async function executeCommand(comando) {
     payload
   });
   await registrarEvento("info", "Iniciando comando", { comandoId: comando?.id, tipo });
+
+  if (tipo === "tab_turner_start") {
+    return startTabTurner(payload?.urls || payload?.sites || [], payload?.intervalSeconds || payload?.intervalo_segundos);
+  }
+
+  if (tipo === "tab_turner_stop") {
+    return stopTabTurner();
+  }
+
+  if (tipo === "config_sync") {
+    return syncRemoteConfig();
+  }
 
   if (tipo === "reload") {
     const tab = await getCurrentTab();
@@ -409,6 +533,10 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
   if (alarm.name === COMMANDS_ALARM) {
     await pollCommands();
+  }
+
+  if (alarm.name === TAB_TURNER_ALARM) {
+    await rotateTabTurner();
   }
 });
 
