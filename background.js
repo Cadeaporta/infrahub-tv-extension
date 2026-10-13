@@ -11,6 +11,7 @@ let logQueue = Promise.resolve();
 
 function registrarEvento(nivel, mensagem, detalhes = {}) {
   const evento = {
+    eventId: crypto.randomUUID(),
     timestamp: new Date().toISOString(),
     nivel,
     mensagem: String(mensagem || '').slice(0, 500),
@@ -82,6 +83,7 @@ async function heartbeat(comandoId = "") {
       await registrarEvento("info", "Heartbeat confirmado", { urlAtual });
     }
 
+    await syncDiagnosticLogs();
     return response.ok;
   } catch (error) {
     console.warn("[InfraHub] falha no heartbeat:", error);
@@ -93,6 +95,72 @@ async function heartbeat(comandoId = "") {
 async function acknowledgeCommand(comandoId) {
   if (!comandoId) return false;
   return heartbeat(String(comandoId));
+}
+
+async function reportCommandStatus(comandoId, status, erro = "") {
+  const cfg = await getConfig();
+  if (!cfg.maquinaId || !cfg.token || !comandoId) return false;
+  try {
+    const response = await fetch(`${cfg.apiUrl}/api/tv/comando-status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        maquina_id: cfg.maquinaId,
+        token: cfg.token,
+        comando_id: String(comandoId),
+        status,
+        ...(erro ? { erro: String(erro).slice(0, 2000) } : {})
+      }),
+      cache: "no-store"
+    });
+    if (!response.ok) {
+      await registrarEvento("error", "API recusou atualização do status do comando", { comandoId, status, httpStatus: response.status });
+    }
+    return response.ok;
+  } catch (error) {
+    await registrarEvento("error", "Falha ao reportar status do comando", { comandoId, status, erro: String(error?.message || error) });
+    return false;
+  }
+}
+
+async function syncDiagnosticLogs() {
+  const cfg = await getConfig();
+  if (!cfg.maquinaId || !cfg.token) return false;
+  try {
+    const state = await chrome.storage.local.get({
+      diagnosticLogs: [],
+      remoteUploadedEventIds: []
+    });
+    const logs = Array.isArray(state.diagnosticLogs) ? state.diagnosticLogs : [];
+    const uploaded = new Set(Array.isArray(state.remoteUploadedEventIds) ? state.remoteUploadedEventIds : []);
+    const batch = logs.filter((item) => item?.eventId && !uploaded.has(item.eventId)).slice(0, 50);
+    if (!batch.length) return true;
+
+    const response = await fetch(`${cfg.apiUrl}/api/tv/eventos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        maquina_id: cfg.maquinaId,
+        token: cfg.token,
+        eventos: batch.map((item) => ({
+          tipo: "extension_log",
+          nivel: item.nivel === "error" ? "erro" : item.nivel === "warn" ? "aviso" : item.nivel === "debug" ? "debug" : "info",
+          mensagem: item.mensagem,
+          detalhes: item.detalhes || {},
+          ocorrido_em: item.timestamp
+        }))
+      }),
+      cache: "no-store"
+    });
+    if (!response.ok) return false;
+
+    const ids = [...uploaded, ...batch.map((item) => item.eventId)].slice(-600);
+    await chrome.storage.local.set({ remoteUploadedEventIds: ids });
+    return true;
+  } catch {
+    // Keep local logs intact while the API is unavailable; retry on the next heartbeat/poll.
+    return false;
+  }
 }
 
 async function pollCommands() {
@@ -125,11 +193,13 @@ async function pollCommands() {
 
     for (const comando of comandos) {
       try {
+        await reportCommandStatus(comando?.id, "executando");
         const executado = await executeCommand(comando);
 
         if (executado) {
           await registrarEvento("info", "Comando executado localmente", { comandoId: comando?.id, tipo: comando?.tipo });
-          const confirmado = await acknowledgeCommand(comando?.id);
+          const statusConfirmado = await reportCommandStatus(comando?.id, "concluido");
+          const confirmado = statusConfirmado || await acknowledgeCommand(comando?.id);
           if (!confirmado) {
             console.warn("[InfraHub] comando executado, mas não confirmado:", comando?.id);
             await registrarEvento("error", "Comando executado, mas não confirmado pela API", { comandoId: comando?.id, tipo: comando?.tipo });
@@ -137,13 +207,16 @@ async function pollCommands() {
             await registrarEvento("info", "Comando confirmado pela API", { comandoId: comando?.id, tipo: comando?.tipo });
           }
         } else {
+          await reportCommandStatus(comando?.id, "falhou", "A extensão não conseguiu executar o comando.");
           await registrarEvento("error", "Comando não executado", { comandoId: comando?.id, tipo: comando?.tipo });
         }
       } catch (error) {
         console.error("[InfraHub] falha ao executar comando:", comando, error);
+        await reportCommandStatus(comando?.id, "falhou", String(error?.message || error));
         await registrarEvento("error", "Exceção durante execução do comando", { comandoId: comando?.id, tipo: comando?.tipo, erro: String(error?.message || error) });
       }
     }
+    await syncDiagnosticLogs();
   } catch (error) {
     console.warn("[InfraHub] falha ao buscar comandos:", error);
     await registrarEvento("error", "Falha ao consultar comandos", { erro: String(error?.message || error) });
