@@ -297,10 +297,10 @@ async function pollCommands() {
   try {
     const url = new URL(`${cfg.apiUrl}/api/comandos`);
     url.searchParams.set("maquina_id", cfg.maquinaId);
-    url.searchParams.set("token", cfg.token);
 
     const response = await fetch(url.toString(), {
       method: "GET",
+      headers: { "x-tv-token": cfg.token },
       cache: "no-store"
     });
 
