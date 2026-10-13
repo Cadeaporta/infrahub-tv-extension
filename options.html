@@ -28,7 +28,17 @@
   <input id="token" type="password" autocomplete="off">
 
   <button id="save">Salvar configuração</button>
-  <div id="status"></div>
+  <div id="status" role="status" aria-live="polite"></div>
+
+  <hr style="margin:28px 0 18px">
+  <h2>Diagnóstico local</h2>
+  <p>Últimos eventos guardados nesta TV. Os registros ficam no navegador e não são enviados automaticamente ao servidor.</p>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <button id="refreshLogs" type="button">Atualizar logs</button>
+    <button id="exportLogs" type="button">Exportar logs JSON</button>
+  </div>
+  <label for="logs">Eventos recentes</label>
+  <textarea id="logs" rows="12" readonly style="width:100%;box-sizing:border-box;margin-top:6px;font-family:monospace;font-size:12px"></textarea>
 
   <script src="options.js"></script>
 </body>
