@@ -622,6 +622,24 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   }
 });
 
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type !== "INFRAHUB_SYNC_NATIVE_IDENTITY") return false;
+  syncNativeIdentity().then(async (ok) => {
+    const identity = await chrome.storage.local.get({
+      apiUrl: DEFAULT_API_URL,
+      maquinaId: "",
+      nativeIdentity: {}
+    });
+    sendResponse({
+      ok,
+      apiUrl: identity.apiUrl,
+      maquinaId: identity.maquinaId,
+      nativeIdentity: identity.nativeIdentity || {}
+    });
+  }).catch((error) => sendResponse({ ok: false, erro: String(error?.message || error) }));
+  return true;
+});
+
 chrome.storage.onChanged.addListener(async (changes, area) => {
   if (
     area === "local" &&
