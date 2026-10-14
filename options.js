@@ -1,35 +1,39 @@
-const DEFAULT_API_URL =
-  "https://infrahub-monitor-api.vercel.app";
-
 async function load() {
   await loadLogs();
   const manifest = chrome.runtime.getManifest();
   const version = document.querySelector("#version");
   if (version) version.textContent = `Versão instalada: ${manifest.version}`;
-  const cfg = await chrome.storage.local.get({
-    apiUrl: DEFAULT_API_URL,
-    maquinaId: "",
-    token: ""
-  });
-
-  document.querySelector("#apiUrl").value = cfg.apiUrl;
-  document.querySelector("#maquinaId").value = cfg.maquinaId;
-  document.querySelector("#token").value = cfg.token;
+  await syncIdentity();
 }
 
-async function save() {
-  const apiUrl = document.querySelector("#apiUrl").value.trim().replace(/\/+$/, "");
-  const maquinaId = document.querySelector("#maquinaId").value.trim();
-  const token = document.querySelector("#token").value.trim();
-  const status = document.querySelector("#status");
-
-  if (!apiUrl || !maquinaId || !token) {
-    status.textContent = "Preencha os três campos.";
-    return;
+async function syncIdentity() {
+  const status = document.querySelector("#identityStatus");
+  const details = document.querySelector("#identityDetails");
+  status.textContent = "Consultando helper local...";
+  details.textContent = "";
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "INFRAHUB_SYNC_NATIVE_IDENTITY" });
+    if (!response || !response.ok) {
+      status.textContent = "Helper indisponível ou identidade ainda não provisionada.";
+      details.textContent = response?.erro || "Confirme a instalação via Atera, o cadastro e se o navegador foi reiniciado.";
+      return;
+    }
+    const identity = response.nativeIdentity || {};
+    status.textContent = identity.statusAprovacao === "aprovada"
+      ? "Identidade sincronizada; máquina aprovada."
+      : `Identidade sincronizada; aprovação: ${identity.statusAprovacao || "pendente"}.`;
+    details.textContent = [
+      `Hostname: ${identity.hostname || "não informado"}`,
+      `ID da máquina: ${response.maquinaId || "não informado"}`,
+      `API: ${response.apiUrl || "não informada"}`,
+      `UUID: ${identity.machineUuid || "não informado"}`,
+      `Sincronizada em: ${identity.syncedAt || "não informado"}`
+    ].join("\\n");
+    details.style.whiteSpace = "pre-line";
+  } catch (error) {
+    status.textContent = "Não foi possível consultar o helper local.";
+    details.textContent = String(error?.message || error);
   }
-
-  await chrome.storage.local.set({ apiUrl, maquinaId, token });
-  status.textContent = "Configuração salva.";
 }
 
 async function loadLogs() {
@@ -57,7 +61,7 @@ async function exportLogs() {
   URL.revokeObjectURL(url);
 }
 
-document.querySelector("#save").addEventListener("click", save);
+document.querySelector("#syncIdentity").addEventListener("click", syncIdentity);
 document.querySelector("#refreshLogs").addEventListener("click", loadLogs);
 document.querySelector("#exportLogs").addEventListener("click", exportLogs);
 load();

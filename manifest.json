@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "InfraHub TV Monitor",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "Monitoramento de TVs, comandos remotos e diagnóstico local do InfraHub.",
   "permissions": [
     "storage",
     "alarms",
-    "tabs"
+    "tabs",
+    "nativeMessaging"
   ],
   "host_permissions": [
     "https://infrahub-monitor-api.vercel.app/*"

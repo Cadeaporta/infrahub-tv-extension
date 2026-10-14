@@ -3,6 +3,7 @@ const DEFAULT_API_URL =
 
 const HEARTBEAT_ALARM = "infrahub-heartbeat";
 const COMMANDS_ALARM = "infrahub-commands";
+const TAB_TURNER_ALARM = "infrahub-tab-turner";
 const HEARTBEAT_MINUTES = 1;
 const COMMANDS_POLL_MINUTES = 0.5;
 const MAX_LOCAL_LOGS = 300;
@@ -11,6 +12,7 @@ let logQueue = Promise.resolve();
 
 function registrarEvento(nivel, mensagem, detalhes = {}) {
   const evento = {
+    eventId: crypto.randomUUID(),
     timestamp: new Date().toISOString(),
     nivel,
     mensagem: String(mensagem || '').slice(0, 500),
@@ -28,6 +30,67 @@ function registrarEvento(nivel, mensagem, detalhes = {}) {
   });
 
   return logQueue;
+}
+
+let nativeHostErrorLogged = false;
+
+async function syncNativeIdentity() {
+  try {
+    const identity = await chrome.runtime.sendNativeMessage(
+      "com.infrahub.tv.identity",
+      { type: "getIdentity" }
+    );
+    if (!identity || identity.ok !== true || !identity.maquinaId || !identity.token) {
+      throw new Error("O helper não retornou uma identidade válida.");
+    }
+
+    const current = await chrome.storage.local.get({
+      apiUrl: DEFAULT_API_URL,
+      maquinaId: "",
+      token: ""
+    });
+    const patch = {
+      apiUrl: String(identity.apiUrl || current.apiUrl || DEFAULT_API_URL).replace(/\/+$/, ""),
+      maquinaId: String(identity.maquinaId),
+      token: String(identity.token),
+      nativeIdentity: {
+        hostname: String(identity.hostname || ""),
+        machineUuid: String(identity.machineUuid || ""),
+        statusAprovacao: String(identity.statusAprovacao || "pendente"),
+        syncedAt: new Date().toISOString()
+      }
+    };
+
+    if (current.apiUrl !== patch.apiUrl ||
+        current.maquinaId !== patch.maquinaId ||
+        current.token !== patch.token) {
+      await chrome.storage.local.set({
+        apiUrl: patch.apiUrl,
+        maquinaId: patch.maquinaId,
+        token: patch.token,
+        nativeIdentity: patch.nativeIdentity
+      });
+    } else {
+      await chrome.storage.local.set({ nativeIdentity: patch.nativeIdentity });
+    }
+
+    if (nativeHostErrorLogged) {
+      await registrarEvento("info", "Identidade recuperada pelo helper local", {
+        hostname: patch.nativeIdentity.hostname,
+        statusAprovacao: patch.nativeIdentity.statusAprovacao
+      });
+    }
+    nativeHostErrorLogged = false;
+    return true;
+  } catch (error) {
+    if (!nativeHostErrorLogged) {
+      await registrarEvento("warn", "Helper local indisponível; mantendo a configuração existente", {
+        erro: String(error?.message || error)
+      });
+      nativeHostErrorLogged = true;
+    }
+    return false;
+  }
 }
 
 async function getConfig() {
@@ -56,6 +119,7 @@ async function getCurrentTab() {
 }
 
 async function heartbeat(comandoId = "") {
+  await syncNativeIdentity();
   const cfg = await getConfig();
   if (!cfg.maquinaId || !cfg.token) return;
 
@@ -82,6 +146,7 @@ async function heartbeat(comandoId = "") {
       await registrarEvento("info", "Heartbeat confirmado", { urlAtual });
     }
 
+    await syncDiagnosticLogs();
     return response.ok;
   } catch (error) {
     console.warn("[InfraHub] falha no heartbeat:", error);
@@ -95,17 +160,211 @@ async function acknowledgeCommand(comandoId) {
   return heartbeat(String(comandoId));
 }
 
+async function reportCommandStatus(comandoId, status, erro = "") {
+  const cfg = await getConfig();
+  if (!cfg.maquinaId || !cfg.token || !comandoId) return false;
+  try {
+    const response = await fetch(`${cfg.apiUrl}/api/tv/comando-status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        maquina_id: cfg.maquinaId,
+        token: cfg.token,
+        comando_id: String(comandoId),
+        status,
+        ...(erro ? { erro: String(erro).slice(0, 2000) } : {})
+      }),
+      cache: "no-store"
+    });
+    if (!response.ok) {
+      await registrarEvento("error", "API recusou atualização do status do comando", { comandoId, status, httpStatus: response.status });
+    }
+    return response.ok;
+  } catch (error) {
+    await registrarEvento("error", "Falha ao reportar status do comando", { comandoId, status, erro: String(error?.message || error) });
+    return false;
+  }
+}
+
+async function syncDiagnosticLogs() {
+  const cfg = await getConfig();
+  if (!cfg.maquinaId || !cfg.token) return false;
+  try {
+    const state = await chrome.storage.local.get({
+      diagnosticLogs: [],
+      remoteUploadedEventIds: []
+    });
+    const logs = Array.isArray(state.diagnosticLogs) ? state.diagnosticLogs : [];
+    const uploaded = new Set(Array.isArray(state.remoteUploadedEventIds) ? state.remoteUploadedEventIds : []);
+    const batch = logs.filter((item) => item?.eventId && !uploaded.has(item.eventId)).slice(0, 50);
+    if (!batch.length) return true;
+
+    const response = await fetch(`${cfg.apiUrl}/api/tv/eventos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        maquina_id: cfg.maquinaId,
+        token: cfg.token,
+        eventos: batch.map((item) => ({
+          event_id: item.eventId,
+          tipo: "extension_log",
+          nivel: item.nivel === "error" ? "erro" : item.nivel === "warn" ? "aviso" : item.nivel === "debug" ? "debug" : "info",
+          mensagem: item.mensagem,
+          detalhes: item.detalhes || {},
+          ocorrido_em: item.timestamp
+        }))
+      }),
+      cache: "no-store"
+    });
+    if (!response.ok) return false;
+
+    const ids = [...uploaded, ...batch.map((item) => item.eventId)].slice(-600);
+    await chrome.storage.local.set({ remoteUploadedEventIds: ids });
+    return true;
+  } catch {
+    // Keep local logs intact while the API is unavailable; retry on the next heartbeat/poll.
+    return false;
+  }
+}
+
+async function startTabTurner(urlsInput, intervalInput = 60) {
+  const urls = (Array.isArray(urlsInput) ? urlsInput : [])
+    .map((item) => typeof item === 'string' ? item : item?.url)
+    .map((item) => String(item || '').trim())
+    .filter((url) => {
+      try { return ['http:', 'https:'].includes(new URL(url).protocol); }
+      catch { return false; }
+    })
+    .slice(0, 20);
+
+  if (!urls.length) return false;
+  const intervalSeconds = Math.min(3600, Math.max(30, Number(intervalInput) || 60));
+  const currentState = await chrome.storage.local.get({ tabTurner: {} });
+  const current = currentState.tabTurner || {};
+  const sameConfig = current.enabled &&
+    current.intervalSeconds === intervalSeconds &&
+    JSON.stringify(current.urls || []) === JSON.stringify(urls);
+  if (sameConfig) {
+    const existingAlarm = await chrome.alarms.get(TAB_TURNER_ALARM);
+    if (!existingAlarm) {
+      await chrome.alarms.create(TAB_TURNER_ALARM, {
+        periodInMinutes: Math.max(0.5, intervalSeconds / 60)
+      });
+    }
+    return true;
+  }
+  const tabIds = [];
+  for (const url of urls) {
+    const matches = await chrome.tabs.query({ url });
+    if (matches.length && matches[0].id != null) {
+      tabIds.push(matches[0].id);
+    } else {
+      const tab = await chrome.tabs.create({ url, active: tabIds.length === 0 });
+      if (tab?.id != null) tabIds.push(tab.id);
+    }
+  }
+
+  await chrome.storage.local.set({
+    tabTurner: {
+      enabled: true,
+      urls,
+      tabIds,
+      intervalSeconds,
+      index: 0,
+      updatedAt: new Date().toISOString()
+    }
+  });
+  await chrome.alarms.clear(TAB_TURNER_ALARM);
+  await chrome.alarms.create(TAB_TURNER_ALARM, {
+    periodInMinutes: Math.max(0.5, intervalSeconds / 60)
+  });
+  await registrarEvento("info", "Tab Turner iniciado", { quantidade: urls.length, intervaloSegundos: intervalSeconds });
+  return true;
+}
+
+async function stopTabTurner() {
+  await chrome.alarms.clear(TAB_TURNER_ALARM);
+  const { tabTurner = {} } = await chrome.storage.local.get({ tabTurner: {} });
+  await chrome.storage.local.set({ tabTurner: { ...tabTurner, enabled: false, updatedAt: new Date().toISOString() } });
+  await registrarEvento("info", "Tab Turner parado");
+  return true;
+}
+
+async function rotateTabTurner() {
+  const { tabTurner = {} } = await chrome.storage.local.get({ tabTurner: {} });
+  if (!tabTurner.enabled || !Array.isArray(tabTurner.urls) || !tabTurner.urls.length) return;
+
+  const tabs = await chrome.tabs.query({});
+  const tabIds = [];
+  for (const url of tabTurner.urls) {
+    const existing = tabs.find((tab) => tab.url === url && tab.id != null);
+    if (existing) tabIds.push(existing.id);
+    else {
+      try {
+        const created = await chrome.tabs.create({ url, active: false });
+        if (created?.id != null) tabIds.push(created.id);
+      } catch (error) {
+        await registrarEvento("error", "Tab Turner não conseguiu abrir uma URL", { url, erro: String(error?.message || error) });
+      }
+    }
+  }
+  if (!tabIds.length) return;
+
+  const index = Number.isInteger(tabTurner.index) ? tabTurner.index : 0;
+  const nextIndex = (index + 1) % tabIds.length;
+  try {
+    await chrome.tabs.update(tabIds[nextIndex], { active: true });
+    await chrome.storage.local.set({
+      tabTurner: { ...tabTurner, tabIds, index: nextIndex, lastRotationAt: new Date().toISOString() }
+    });
+  } catch (error) {
+    await registrarEvento("error", "Tab Turner falhou ao alternar aba", { erro: String(error?.message || error) });
+  }
+}
+
+async function syncRemoteConfig() {
+  const cfg = await getConfig();
+  if (!cfg.maquinaId || !cfg.token) return false;
+  try {
+    const url = new URL(`${cfg.apiUrl}/api/tv/config`);
+    url.searchParams.set("maquina_id", cfg.maquinaId);
+    const response = await fetch(url.toString(), { method: "GET", headers: { "x-tv-token": cfg.token }, cache: "no-store" });
+    if (!response.ok) return false;
+    const data = await response.json();
+    const configuracao = data.configuracao && typeof data.configuracao === "object" ? data.configuracao : {};
+    const perfil = data.perfil && typeof data.perfil === "object" ? data.perfil : null;
+    const previousState = await chrome.storage.local.get({ remoteConfig: {} });
+    const previousProfileId = previousState.remoteConfig?.perfil?.id || null;
+    await chrome.storage.local.set({ remoteConfig: { configuracao, perfil, syncedAt: new Date().toISOString() } });
+
+    if (perfil && perfil.ativo !== false && Array.isArray(perfil.sites) && perfil.sites.length) {
+      await startTabTurner(perfil.sites, perfil.intervalo_segundos);
+    } else if (configuracao.tab_turner_enabled === false ||
+      (previousProfileId && !perfil && !Array.isArray(configuracao.sites))) {
+      await stopTabTurner();
+    } else if (configuracao.tab_turner_enabled === true && Array.isArray(configuracao.sites)) {
+      await startTabTurner(configuracao.sites, configuracao.intervalo_segundos);
+    }
+    await registrarEvento("info", "Configuração remota sincronizada", { perfil: perfil?.nome || null });
+    return true;
+  } catch (error) {
+    await registrarEvento("error", "Falha ao sincronizar configuração remota", { erro: String(error?.message || error) });
+    return false;
+  }
+}
+
 async function pollCommands() {
+  await syncNativeIdentity();
   const cfg = await getConfig();
   if (!cfg.maquinaId || !cfg.token) return;
 
   try {
     const url = new URL(`${cfg.apiUrl}/api/comandos`);
     url.searchParams.set("maquina_id", cfg.maquinaId);
-    url.searchParams.set("token", cfg.token);
 
     const response = await fetch(url.toString(), {
       method: "GET",
+      headers: { "x-tv-token": cfg.token },
       cache: "no-store"
     });
 
@@ -118,6 +377,7 @@ async function pollCommands() {
     const data = await response.json();
     const comandos = Array.isArray(data.comandos) ? data.comandos : [];
 
+    await syncRemoteConfig();
     if (comandos.length) {
       console.log(`[InfraHub] ${comandos.length} comando(s) recebido(s).`);
       await registrarEvento("info", "Comandos recebidos", { quantidade: comandos.length, ids: comandos.map(c => c?.id).filter(Boolean) });
@@ -125,11 +385,13 @@ async function pollCommands() {
 
     for (const comando of comandos) {
       try {
+        await reportCommandStatus(comando?.id, "executando");
         const executado = await executeCommand(comando);
 
         if (executado) {
           await registrarEvento("info", "Comando executado localmente", { comandoId: comando?.id, tipo: comando?.tipo });
-          const confirmado = await acknowledgeCommand(comando?.id);
+          const statusConfirmado = await reportCommandStatus(comando?.id, "concluido");
+          const confirmado = statusConfirmado || await acknowledgeCommand(comando?.id);
           if (!confirmado) {
             console.warn("[InfraHub] comando executado, mas não confirmado:", comando?.id);
             await registrarEvento("error", "Comando executado, mas não confirmado pela API", { comandoId: comando?.id, tipo: comando?.tipo });
@@ -137,13 +399,16 @@ async function pollCommands() {
             await registrarEvento("info", "Comando confirmado pela API", { comandoId: comando?.id, tipo: comando?.tipo });
           }
         } else {
+          await reportCommandStatus(comando?.id, "falhou", "A extensão não conseguiu executar o comando.");
           await registrarEvento("error", "Comando não executado", { comandoId: comando?.id, tipo: comando?.tipo });
         }
       } catch (error) {
         console.error("[InfraHub] falha ao executar comando:", comando, error);
+        await reportCommandStatus(comando?.id, "falhou", String(error?.message || error));
         await registrarEvento("error", "Exceção durante execução do comando", { comandoId: comando?.id, tipo: comando?.tipo, erro: String(error?.message || error) });
       }
     }
+    await syncDiagnosticLogs();
   } catch (error) {
     console.warn("[InfraHub] falha ao buscar comandos:", error);
     await registrarEvento("error", "Falha ao consultar comandos", { erro: String(error?.message || error) });
@@ -168,6 +433,18 @@ async function executeCommand(comando) {
     payload
   });
   await registrarEvento("info", "Iniciando comando", { comandoId: comando?.id, tipo });
+
+  if (tipo === "tab_turner_start") {
+    return startTabTurner(payload?.urls || payload?.sites || [], payload?.intervalSeconds || payload?.intervalo_segundos);
+  }
+
+  if (tipo === "tab_turner_stop") {
+    return stopTabTurner();
+  }
+
+  if (tipo === "config_sync") {
+    return syncRemoteConfig();
+  }
 
   if (tipo === "reload") {
     const tab = await getCurrentTab();
@@ -317,6 +594,7 @@ async function ensureAlarms() {
 
 chrome.runtime.onInstalled.addListener(async () => {
   await registrarEvento("info", "Extensão instalada ou atualizada", { versao: chrome.runtime.getManifest().version });
+  await syncNativeIdentity();
   await ensureAlarms();
   await heartbeat();
   await pollCommands();
@@ -324,6 +602,7 @@ chrome.runtime.onInstalled.addListener(async () => {
 
 chrome.runtime.onStartup.addListener(async () => {
   await registrarEvento("info", "Navegador iniciado", { versao: chrome.runtime.getManifest().version });
+  await syncNativeIdentity();
   await ensureAlarms();
   await heartbeat();
   await pollCommands();
@@ -337,6 +616,28 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === COMMANDS_ALARM) {
     await pollCommands();
   }
+
+  if (alarm.name === TAB_TURNER_ALARM) {
+    await rotateTabTurner();
+  }
+});
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type !== "INFRAHUB_SYNC_NATIVE_IDENTITY") return false;
+  syncNativeIdentity().then(async (ok) => {
+    const identity = await chrome.storage.local.get({
+      apiUrl: DEFAULT_API_URL,
+      maquinaId: "",
+      nativeIdentity: {}
+    });
+    sendResponse({
+      ok,
+      apiUrl: identity.apiUrl,
+      maquinaId: identity.maquinaId,
+      nativeIdentity: identity.nativeIdentity || {}
+    });
+  }).catch((error) => sendResponse({ ok: false, erro: String(error?.message || error) }));
+  return true;
 });
 
 chrome.storage.onChanged.addListener(async (changes, area) => {
@@ -351,5 +652,6 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
 });
 
 (async () => {
+  await syncNativeIdentity();
   await ensureAlarms();
 })();
