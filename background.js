@@ -50,7 +50,7 @@ async function syncNativeIdentity() {
       token: ""
     });
     const patch = {
-      apiUrl: String(identity.apiUrl || current.apiUrl || DEFAULT_API_URL).replace(/\\/+$/, ""),
+      apiUrl: String(identity.apiUrl || current.apiUrl || DEFAULT_API_URL).replace(/\/+$/, ""),
       maquinaId: String(identity.maquinaId),
       token: String(identity.token),
       nativeIdentity: {
