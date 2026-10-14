@@ -32,6 +32,67 @@ function registrarEvento(nivel, mensagem, detalhes = {}) {
   return logQueue;
 }
 
+let nativeHostErrorLogged = false;
+
+async function syncNativeIdentity() {
+  try {
+    const identity = await chrome.runtime.sendNativeMessage(
+      "com.infrahub.tv.identity",
+      { type: "getIdentity" }
+    );
+    if (!identity || identity.ok !== true || !identity.maquinaId || !identity.token) {
+      throw new Error("O helper não retornou uma identidade válida.");
+    }
+
+    const current = await chrome.storage.local.get({
+      apiUrl: DEFAULT_API_URL,
+      maquinaId: "",
+      token: ""
+    });
+    const patch = {
+      apiUrl: String(identity.apiUrl || current.apiUrl || DEFAULT_API_URL).replace(/\\/+$/, ""),
+      maquinaId: String(identity.maquinaId),
+      token: String(identity.token),
+      nativeIdentity: {
+        hostname: String(identity.hostname || ""),
+        machineUuid: String(identity.machineUuid || ""),
+        statusAprovacao: String(identity.statusAprovacao || "pendente"),
+        syncedAt: new Date().toISOString()
+      }
+    };
+
+    if (current.apiUrl !== patch.apiUrl ||
+        current.maquinaId !== patch.maquinaId ||
+        current.token !== patch.token) {
+      await chrome.storage.local.set({
+        apiUrl: patch.apiUrl,
+        maquinaId: patch.maquinaId,
+        token: patch.token,
+        nativeIdentity: patch.nativeIdentity
+      });
+    } else {
+      await chrome.storage.local.set({ nativeIdentity: patch.nativeIdentity });
+    }
+
+    if (nativeHostErrorLogged) {
+      await registrarEvento("info", "Identidade recuperada pelo helper local", {
+        hostname: patch.nativeIdentity.hostname,
+        statusAprovacao: patch.nativeIdentity.statusAprovacao
+      });
+    }
+    nativeHostErrorLogged = false;
+    return true;
+  } catch (error) {
+    if (!nativeHostErrorLogged) {
+      await registrarEvento("warn", "Helper local indisponível; mantendo a configuração existente", {
+        erro: String(error?.message || error)
+      });
+      nativeHostErrorLogged = true;
+    }
+    return false;
+  }
+}
+
 async function getConfig() {
   const cfg = await chrome.storage.local.get({
     apiUrl: DEFAULT_API_URL,
@@ -58,6 +119,7 @@ async function getCurrentTab() {
 }
 
 async function heartbeat(comandoId = "") {
+  await syncNativeIdentity();
   const cfg = await getConfig();
   if (!cfg.maquinaId || !cfg.token) return;
 
@@ -292,6 +354,7 @@ async function syncRemoteConfig() {
 }
 
 async function pollCommands() {
+  await syncNativeIdentity();
   const cfg = await getConfig();
   if (!cfg.maquinaId || !cfg.token) return;
 
@@ -531,6 +594,7 @@ async function ensureAlarms() {
 
 chrome.runtime.onInstalled.addListener(async () => {
   await registrarEvento("info", "Extensão instalada ou atualizada", { versao: chrome.runtime.getManifest().version });
+  await syncNativeIdentity();
   await ensureAlarms();
   await heartbeat();
   await pollCommands();
@@ -538,6 +602,7 @@ chrome.runtime.onInstalled.addListener(async () => {
 
 chrome.runtime.onStartup.addListener(async () => {
   await registrarEvento("info", "Navegador iniciado", { versao: chrome.runtime.getManifest().version });
+  await syncNativeIdentity();
   await ensureAlarms();
   await heartbeat();
   await pollCommands();
@@ -569,5 +634,6 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
 });
 
 (async () => {
+  await syncNativeIdentity();
   await ensureAlarms();
 })();
