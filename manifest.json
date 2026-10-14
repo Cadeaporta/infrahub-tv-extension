@@ -6,7 +6,8 @@
   "permissions": [
     "storage",
     "alarms",
-    "tabs"
+    "tabs",
+    "nativeMessaging"
   ],
   "host_permissions": [
     "https://infrahub-monitor-api.vercel.app/*"
