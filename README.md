@@ -4,10 +4,12 @@ Extensão Chrome/Chromium Manifest V3 para as TVs do InfraHub.
 
 ## Configuração
 
-1. Cadastre a TV pelo fluxo de registro aprovado da API.
-2. Instale esta pasta como extensão descompactada.
-3. Abra as opções da extensão e informe API URL, ID da máquina e token emitido para esse dispositivo.
-4. O token só é aceito pela API quando o dispositivo está aprovado no painel.
+1. Gere um código de cadastro de uso único no painel autenticado.
+2. Execute `scripts/Install-InfraHubTV.ps1` pelo Atera com o código e uma URL de API explícita do ambiente correto.
+3. O helper registra hostname + UUID persistente, instala o host nativo para Chrome/Edge e guarda o token com ACL restrita.
+4. Carregue esta pasta como extensão descompactada nos navegadores autorizados. A extensão sincroniza a identidade pelo Native Messaging, sem digitar o token nas opções.
+5. Aprove a máquina no painel. Até lá, a API bloqueia heartbeat e comandos.
+6. Consulte `docs/ATERA_NATIVE_HELPER.md` para pré-requisitos, parâmetros e segurança.
 
 A `SUPABASE_SERVICE_ROLE_KEY` nunca é usada pela extensão. O segredo de cadastro de dispositivos também não deve ser embutido nesta extensão; ele deve ficar em um helper local instalado e gerenciado pelo Atera.
 
@@ -18,9 +20,13 @@ A `SUPABASE_SERVICE_ROLE_KEY` nunca é usada pela extensão. O segredo de cadast
 - Comandos suportados: `reload`, `navigate`, `navegar`, `abrir_url`, `abrir_urls`.
 - A extensão informa recebimento, execução, conclusão e falha de comandos pela API.
 
-## Instalação no Chrome/Chromium
+## Instalação no Chrome e Edge
 
-`chrome://extensions` → habilite **Modo do desenvolvedor** → **Carregar sem compactação** → selecione esta pasta.
+Chrome: `chrome://extensions` → habilite **Modo do desenvolvedor** → **Carregar sem compactação** → selecione esta pasta.
+
+Edge: `edge://extensions` → habilite **Modo do desenvolvedor** → **Carregar sem compactação** → selecione esta pasta.
+
+O ID da extensão precisa constar em `allowed_origins` do host nativo. Confira os IDs dos dois navegadores e passe-os ao script do Atera caso sejam diferentes.
 
 ## Diagnóstico
 
